@@ -11,6 +11,7 @@ import pandas as pd
 import datetime
 import emlibrary as lib
 import matplotlib.pyplot as plt
+import pickle
 
 synapse_cutoff = 5 # minimum number of synapses in a connection
 min_score = 30 # minimum distance between pre and postsynaptic membrane
@@ -18,6 +19,7 @@ frac_connected = 0.05 # minimum fraction of synapses that can be attributed to p
 number_of_steps = 3 # order of connections into brain (e.g. 1 is direct connections from DNs)
 
 path = '/home/kyobi/em_analysis/meshes/'
+output_path = '/home/kyobi/em_analysis/data/'
 datastack_name = 'fanc_production_mar2021'
 client = CAVEclient(datastack_name)
 soma_table = client.materialize.live_query('soma_aug2021',datetime.datetime.now())
@@ -45,28 +47,14 @@ df = lib.get_connections(input_ids,output_ids,synapse_cutoff,min_score,frac_conn
 
 matrix = lib.get_matrix_from_df(df,input_ids,output_ids)
 
-G = matrix
-A = (G > 0).astype(int)
+analysis = lib.get_graphs(matrix)
 
-max_steps = 5
-D, R = lib.distance_and_reachability_matrices(A, max_steps)
-
-# out_idx = A.columns.isin(output_ids)
-# ind = (sum(D.loc[:,out_idx],axis=1) > 0) | out_idx
-
-k_den = A.unstack().sum() / A.size
-
-J = lib.joint_degree_matrix(A,30)
-
-M_in = lib.matching_matrix(A,1)
-M_out = lib.matching_matrix(A,0) 
-M_all = M_out - M_in
-
-rec = lib.reciprocal_matrix(A)
+file_to_write = open('output.pickle','wb')
+pickle.dump(analysis,output_path+file_to_write)
 
 #%% Plot the figures
 
-edges = np.zeros(len(G))
+edges = np.zeros(len(analysis['G']))
 edges[np.isin(G.index,input_ids)] = 0
 edges[np.isin(G.index,output_ids)] = 2
 edges[~np.isin(G.index,input_ids) & ~np.isin(G.index,output_ids)] = 1    
