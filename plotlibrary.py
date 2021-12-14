@@ -41,43 +41,37 @@ def generate_graph_theory_heatmaps(M,edges,title,colorbar_label,cluster):
         ax.axes.add_patch(patches.Rectangle((ii,len(M)), height=10, width=1,color=col,\
                                             clip_on=False))   
 
-def make_hop_connectivity_plots(G,D,input_ds,output_ds):
+def make_hop_connectivity_plots(G,D,input_ds,output_ds,number_of_steps):
     import seaborn as sns
     fig_name = 'Hop analysis'
     def make_heatmap(data,idx):
         sns.heatmap(data,xticklabels=output_ds['Cell type'][idx],\
                     yticklabels=input_ds['Cell type'],vmax=vmax,cmap=cmap,cbar_kws=cbar_params)
         plt.gca().set_aspect('equal')
-        plt.rc('font',size=4)
+        plt.rc('font',size=8)
         plt.tight_layout()
     
     cmap = 'gray_r'
-    cbar_params = {'shrink':0.05}
+    cbar_params = {'shrink':0.15}
     fig = plt.figure()
     vmax = 1
     
-    def get_sided_data(D,side,order):
-    
+    def plot_sided(D,side,order):
         idx = (output_ds['Cell type'] != 'PSI') & (output_ds['Nerve Side'] == side)
         M = (D==order).astype(int)
         data = M.loc[input_ds['SegIDs'],output_ds['SegIDs'][idx]]     
         make_heatmap(data,idx)
         plt.title(side+' nerves')
-        plt.rc('font',size=4)
-        return data
+        plt.draw()
+
+
     
-    plt.subplot(331)
-    first_L = get_sided_data(D,'L',1)
-    plt.subplot(332)
-    first_R = get_sided_data(D,'R',1) 
-    plt.subplot(334)
-    second_L = get_sided_data(D,'L',2)
-    plt.subplot(335)
-    second_R = get_sided_data(D,'R',2)
-    plt.subplot(337)
-    third_L = get_sided_data(D,'L',3)
-    plt.subplot(338)
-    third_R = get_sided_data(D,'R',3)
+    for ii in range(number_of_steps):
+        plt.subplot(number_of_steps,2,ii+1)
+        plot_sided(D,'L',ii)
+        plt.subplot(number_of_steps,2,ii+2)
+        plot_sided(D,'R',ii)
+
     
     # def get_LR_comparison_plots(L,R):
     #     # for ii in range(L.shape[0]):
@@ -101,6 +95,4 @@ def make_hop_connectivity_plots(G,D,input_ds,output_ds):
     # plt.subplot(339)
     # get_LR_comparison_plots(third_L,third_R)
     
-    
-    plt.savefig(fig_name) 
     

@@ -9,31 +9,33 @@ Created on Tue Nov 30 14:10:11 2021
 import numpy as np
 import datetime
 import pandas as pd
-import emlibrary.py as lib
+import time
 
 def get_graphs(matrix):
     G = matrix
     
     A = (G > 0).astype(int)   
     max_steps = 5
-    D, R = lib.distance_and_reachability_matrices(A, max_steps)   
+    D, R = distance_and_reachability_matrices(A, max_steps)   
     
     k_den = A.unstack().sum() / A.size   
-    J = lib.joint_degree_matrix(A,30)
+    J = joint_degree_matrix(A,30)
     
-    M_in = lib.matching_matrix(A,1)
-    M_out = lib.matching_matrix(A,0) 
+    M_in = matching_matrix(A,1)
+    M_out = matching_matrix(A,0) 
     M_all = M_out - M_in  
-    rec = lib.reciprocal_matrix(A)   
-    analysis = {'G' : G,
-                'A' : A,
-                'D' : D,
-                'J' : J,
-                'M_in' : M_in,
-                'M_out' : M_out,
-                'M_all' : M_all,
-                'reciprocal' : rec,   
-                'k_den' : k_den
+    rec = reciprocal_matrix(A)   
+    analysis = {
+        'G'             : G,
+        'A'             : A,
+        'D'             : D,
+        'J'             : J,
+        'M_in'          : M_in,
+        'M_out'         : M_out,
+        'M_all'         : M_all,
+        'reciprocal'    : rec,   
+        'k_den'         : k_den,
+        'R'             : R
         }
 
     return analysis
@@ -47,7 +49,9 @@ def load_fanc_client():
 
 def get_matrix_from_df(df,input_ids,output_ids):
     
-    ids = pd.concat([df.pre_pt_root_id.drop_duplicates(),pd.Series(output_ids)])
+    inter_ids = df.pre_pt_root_id[~(df.pre_pt_root_id.isin(input_ids) | \
+                                    df.pre_pt_root_id.isin(output_ids))].drop_duplicates().reset_index(drop=True)
+    ids = pd.concat([pd.Series(input_ids),inter_ids,pd.Series(output_ids)])
     matrix = pd.DataFrame(np.zeros([len(ids),len(ids)]),index=ids,\
                                columns=ids)
     for ii in range(len(df)):
@@ -71,13 +75,14 @@ def get_latest_roots(neuron_x):
         return neuron_x
         
 
-def get_connections(input_ids,output_ids,synapse_cutoff,min_score,frac_connected,num_steps):
+def get_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connected,num_steps):
     client = load_fanc_client()
     soma_table = client.materialize.live_query('soma_aug2021',datetime.datetime.now())
     all_connections = []
     all_fractions_connected = []
     ids = input_ids
     for ii in range(num_steps):
+        time.sleep(5)
         connections = []
         chunk_size = 30
         for count in range(1,np.ceil(ids.shape[0]/chunk_size).astype(int)+1):
@@ -85,8 +90,9 @@ def get_connections(input_ids,output_ids,synapse_cutoff,min_score,frac_connected
                 pre_ids=ids[((count-1)*chunk_size):(count*chunk_size)],\
                     timestamp=datetime.datetime.utcnow())[['pre_pt_root_id',\
                                                                     'post_pt_root_id','score']])
+                                                           
         connections = pd.concat(connections)                                                                    
-        connections = connections.loc[connections.score>min_score,:]
+        connections = connections.loc[((connections.score>=score_bounds[0]) & (connections.score<=score_bounds[1])),:]
         total_synapses = connections.groupby('pre_pt_root_id').\
             aggregate(len).rename(columns={'post_pt_root_id':'num_synapses'})['num_synapses']        
         syn_in_conn = connections.groupby(['pre_pt_root_id','post_pt_root_id']).\
@@ -112,7 +118,8 @@ def get_connections(input_ids,output_ids,synapse_cutoff,min_score,frac_connected
         ids = ids[~np.isin(ids,output_ids)]
         
     df = pd.concat(all_connections).drop_duplicates().reset_index(drop=True)
-    return df                                                                                                                 
+    all_fracs = pd.concat(all_fractions_connected)
+    return df, all_fracs                                                                                                                 
 
     
 def joint_degree_matrix(A,max_steps):
@@ -134,7 +141,8 @@ def matching_matrix(A,direction):
     matrix = pd.DataFrame(np.zeros([A.shape[axis_on],A.shape[axis_on]]))
     for i in range(matrix.shape[axis_on]):
         for j in range(matrix.shape[axis_on]):
-            matrix.iloc[i,j] = (A.iloc[i,:] & A.iloc[j,:]).sum() / (A.iloc[i,:] | A.iloc[j,:]).sum()
+            if (A.iloc[i,:] | A.iloc[j,:]).sum() > 0:
+                matrix.iloc[i,j] = (A.iloc[i,:] & A.iloc[j,:]).sum() / (A.iloc[i,:] | A.iloc[j,:]).sum()
     return matrix.fillna(0)
             
 def reciprocal_matrix(A):
