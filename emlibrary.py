@@ -12,6 +12,22 @@ import pandas as pd
 import time
 from meshparty import meshwork, skeletonize, skeleton_io, skeleton, trimesh_io, trimesh_vtk
 
+def get_matched_inter_datasheet(segIDs,ds):
+    client = load_fanc_client()
+    for ii,val in enumerate(segIDs):
+        print(ii)
+        cond_1 = client.chunkedgraph.is_latest_roots([val])[0]
+        cond_2 = ds.SegIDs.isin(client.chunkedgraph.get_past_ids\
+                             ([val])['past_id_map'][val])
+        if cond_1 & ~np.any(cond_2):
+            print('Seg not found in spreadsheet -- '+str(val))
+        elif np.any(cond_2):
+            print('Updated segment ID from '+str(ds.loc[cond_2,:]['SegIDs'])+\
+                  'to '+str(val))
+            ds.loc[cond_2,:]['SegIDs'] = val
+        ds['specific'] = ds['specific'].astype(str)
+    return ds
+
 def get_graphs(matrix):
     G = matrix
     
@@ -92,7 +108,9 @@ def get_latest_roots(neuron_x):
 
 def get_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connected,num_steps):
     
-    zeroeth_connections = get_input_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connected,num_steps)
+    zeroeth_connections = get_input_connections(input_ids,output_ids,\
+                                                synapse_cutoff,score_bounds,\
+                                                    frac_connected,num_steps)
     client = load_fanc_client()
     soma_table = client.materialize.live_query('soma_aug2021',datetime.datetime.now())
     all_connections = []
@@ -112,27 +130,24 @@ def get_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connec
                     timestamp=datetime.datetime.utcnow())[['pre_pt_root_id',\
                                                                     'post_pt_root_id','score']])
                                                            
-        connections = pd.concat(connections)                                                                    
-        connections = connections.loc[((connections.score>=score_bounds[0]) & (connections.score<=score_bounds[1])),:]
-        total_synapses = connections.groupby('pre_pt_root_id').\
-            aggregate(len).rename(columns={'post_pt_root_id':'num_synapses'})['num_synapses']        
-        syn_in_conn = connections.groupby(['pre_pt_root_id','post_pt_root_id']).\
-            transform(len)           
-        connections['syn_in_conn'] = syn_in_conn
-        connections = connections[['pre_pt_root_id','post_pt_root_id','syn_in_conn']].\
-            loc[(syn_in_conn > synapse_cutoff).iloc[:,0],:].\
-            drop_duplicates().reset_index(drop=True)        
-        has_soma_or_MN = connections['post_pt_root_id'].isin(soma_table['pt_root_id']) | \
-            connections['post_pt_root_id'].isin(output_ids)
-        connections['has_soma_or_MN'] = has_soma_or_MN
-        connections['order'] = ii+1        
-        synapses_with_soma_or_MN = connections.loc[has_soma_or_MN,:].groupby('pre_pt_root_id').\
-            aggregate(sum)['syn_in_conn']   
-        fraction_connected = (synapses_with_soma_or_MN/total_synapses).fillna(0)
-        has_connections = connections.pre_pt_root_id.\
-                                                  isin(fraction_connected.index[fraction_connected > \
-                                                                                frac_connected])
-        connections = connections.loc[has_soma_or_MN & has_connections,:]       
+        connections = pd.concat(connections)                                                                             
+        connections = apply_score_cutoff(connections,score_bounds)
+        total_synapses = get_total_synapses(connections)
+        connections = get_syn_in_conn(connections)
+        connections = apply_synapse_cutoff(connections,synapse_cutoff)                                                               
+
+        fraction_connected,has_soma_or_MN = get_fraction_connected(connections,\
+                                                    soma_table,output_ids,\
+                                                        total_synapses)
+
+        # has_connections = connections.pre_pt_root_id.\
+        #                                           isin(fraction_connected.\
+        #                                                index[fraction_connected\
+        #                                                      > frac_connected])
+        connections['order'] = ii+1      
+        print('proportion of connections passing soma/MN filter:' + \
+              str(has_soma_or_MN.sum()/len(connections)))                                                                      
+        connections = connections.loc[has_soma_or_MN,:]
         all_connections.append(connections)
         all_fractions_connected.append(fraction_connected)
         all_total_synapses.append(total_synapses)                  
@@ -150,6 +165,36 @@ def get_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connec
     return analysis                                                                                                             
 
 
+def get_syn_in_conn(df):
+    syn_in_conn = df.groupby(['pre_pt_root_id','post_pt_root_id']).\
+        transform(len)
+    df['syn_in_conn'] = syn_in_conn
+    return df
+
+def apply_synapse_cutoff(df,synapse_cutoff):
+    df = df[['pre_pt_root_id','post_pt_root_id','syn_in_conn']].\
+        loc[(df['syn_in_conn'] > synapse_cutoff),:].\
+        drop_duplicates().reset_index(drop=True)
+    return df
+
+def apply_score_cutoff(df,score_bounds):
+    df = df.loc[((df.score>=score_bounds[0]) & (df.score<=score_bounds[1])),:]
+    return df
+
+def get_total_synapses(df):
+    df = df.groupby('pre_pt_root_id').\
+        aggregate(len).rename(columns={'post_pt_root_id':'num_synapses'})\
+            ['num_synapses']       
+    return df                                    
+
+def get_fraction_connected(df,soma_table,output_ids,total_synapses):
+    has_soma_or_MN = df['post_pt_root_id'].isin(soma_table['pt_root_id']) | \
+        df['post_pt_root_id'].isin(output_ids)
+    df['has_soma_or_MN'] = has_soma_or_MN
+    synapses_with_soma_or_MN = df.loc[has_soma_or_MN,:].groupby('pre_pt_root_id').\
+        aggregate(sum)['syn_in_conn']
+    fraction_connected = (synapses_with_soma_or_MN/total_synapses).fillna(0)
+    return fraction_connected,has_soma_or_MN
 
 def get_input_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_connected,num_steps):
     client = load_fanc_client()
@@ -167,38 +212,36 @@ def get_input_connections(input_ids,output_ids,synapse_cutoff,score_bounds,frac_
                                                                 'post_pt_root_id','score']])
                                                        
     connections = pd.concat(connections)                                                                    
-    connections = connections.loc[((connections.score>=score_bounds[0]) & (connections.score<=score_bounds[1])),:]  
-    syn_in_conn = connections.groupby(['pre_pt_root_id','post_pt_root_id']).\
-        transform(len)           
-    connections['syn_in_conn'] = syn_in_conn
-    connections = connections[['pre_pt_root_id','post_pt_root_id','syn_in_conn']].\
-        loc[(syn_in_conn > synapse_cutoff).iloc[:,0],:].\
-        drop_duplicates().reset_index(drop=True)
+    connections = apply_score_cutoff(connections,score_bounds)
+    connections = get_syn_in_conn(connections)
+    connections = apply_synapse_cutoff(connections,synapse_cutoff)
+
     zeroeth_ids = np.array(connections.pre_pt_root_id.drop_duplicates().reset_index(drop=True))
     zeroeth_connections = client.materialize.synapse_query(\
         pre_ids=zeroeth_ids,\
             timestamp=datetime.datetime.utcnow())[['pre_pt_root_id',\
                                                             'post_pt_root_id','score']]
-    total_synapses = zeroeth_connections.groupby('pre_pt_root_id').\
-        aggregate(len).rename(columns={'post_pt_root_id':'num_synapses'})['num_synapses']                                           
-    has_soma_or_MN = connections['post_pt_root_id'].isin(soma_table['pt_root_id']) | \
-        connections['post_pt_root_id'].isin(output_ids)
-    connections['has_soma_or_MN'] = has_soma_or_MN
-    connections['order'] = 0      
-    synapses = connections.groupby('pre_pt_root_id').\
-        aggregate(sum)['syn_in_conn']   
-    fraction_connected = (synapses/total_synapses).fillna(0)
-    has_connections = connections.pre_pt_root_id.\
-                                              isin(fraction_connected.index[fraction_connected > \
-                                                                            frac_connected])
-    connections = connections.loc[has_connections,:]       
-                         
+    zeroeth_connections = apply_score_cutoff(zeroeth_connections,score_bounds)
+    total_zeroeth_synapses = get_total_synapses(zeroeth_connections)
+    zeroeth_connections = get_syn_in_conn(zeroeth_connections)
+    zeroeth_connections = apply_synapse_cutoff(zeroeth_connections,synapse_cutoff)
+     
+    fraction_connected,has_soma_or_MN = get_fraction_connected(zeroeth_connections,\
+                                                soma_table,output_ids,\
+                                                    total_zeroeth_synapses)
+
+    # has_connections = connections.pre_pt_root_id.\
+    #                                           isin(fraction_connected.index[fraction_connected > \
+    #                                                                         frac_connected])
+  
+    connections = connections.loc[has_soma_or_MN,:]       
+    connections['order'] = 0             
         
     df = connections.drop_duplicates().reset_index(drop=True)
     analysis = {
         'df'    :  df,
         'fraction_connected'   :   fraction_connected,
-        'total_output_synapses' : total_synapses
+        'total_output_synapses' : total_zeroeth_synapses
         }
     return analysis                                            
 
@@ -262,3 +305,16 @@ def get_top_connections(input_id,synapse_cutoff):
     x = client.materialize.synapse_query(pre_ids=input_id).groupby('post_pt_root_id').count()['score']
     y = x[x>synapse_cutoff]
     return y
+
+def separate_datasheet_label(analysis):
+    analysis['input_data_sheet'][['broad','specific','side']] = \
+        analysis['input_data_sheet']['Cell type'].str.split('_',expand=True)
+    return analysis
+            
+
+    
+    
+    
+    
+    
+        
